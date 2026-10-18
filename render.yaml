@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: seismic-core-x-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./app/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+  - type: web
+    name: seismic-core-x-dashboard
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_URL
+        sync: false
