@@ -312,4 +312,5 @@ la clave API al repositorio ni al archivo `.env.example`.
 
 El firmware del ESP32 con MPU6050 está en [firmware/](firmware/). Consulta
 [firmware/README.md](firmware/README.md) para el cableado, compilación y
-configuración de la URL WebSocket local o de Render.
+configuración de la URL WebSocket local o de Render. La primera carga se realiza
+por USB y las siguientes pueden hacerse por OTA dentro de la misma red Wi-Fi.

@@ -42,7 +42,7 @@ La conexión segura usa `wss://`. `setInsecure()` permite probar el certificado
 sin cargar una CA en el ESP32; para producción estricta conviene validar el
 certificado raíz de Render.
 
-## Compilar y cargar
+## Primera carga por USB
 
 Desde esta carpeta:
 
@@ -52,8 +52,43 @@ pio run --target upload
 pio device monitor
 ```
 
+La primera carga debe hacerse por USB porque el ESP32 todavía no tiene el
+firmware OTA. Después de cargarlo, abre el monitor y confirma:
+
+```text
+WiFi conectado
+OTA disponible como: seismic-core-x
+```
+
+## Actualizar por OTA
+
+OTA funciona dentro de la misma red local. El computador y el ESP32 deben estar
+conectados al mismo Wi-Fi; no se utiliza la URL de Render para subir el
+firmware.
+
+Cuando el ESP32 esté encendido y conectado:
+
+```bash
+pio run -e esp32ota -t upload
+```
+
+Si `.local` no se resuelve en Windows, busca la IP que aparece en el monitor
+serial y ejecuta:
+
+```bash
+pio run -e esp32ota -t upload --upload-port 192.168.1.50
+```
+
+Después de subir la nueva compilación, el ESP32 reinicia y vuelve a conectar el
+WebSocket del sensor automáticamente.
+
+La actualización OTA no funciona directamente hacia un ESP32 detrás de una red
+doméstica usando Render como intermediario. Para una actualización remota se
+necesita un servidor OTA HTTP autenticado y una implementación adicional en el
+firmware.
+
 También puedes usar los botones **Build**, **Upload** y **Monitor** de
-PlatformIO.
+PlatformIO. Para OTA selecciona el entorno `esp32ota`.
 
 ## Mensaje enviado
 

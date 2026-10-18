@@ -2,6 +2,7 @@
 #include <Adafruit_Sensor.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ArduinoOTA.h>
 #include <WebSocketsClient.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -16,6 +17,8 @@ const char* SERVER_HOST = "192.168.1.10";
 const uint16_t SERVER_PORT = 8000;
 const char* SERVER_PATH = "/ws/sensor";
 const bool SERVER_SECURE = false;
+
+const char* OTA_HOSTNAME = "seismic-core-x";
 
 constexpr uint32_t SAMPLE_INTERVAL_MS = 50;
 constexpr float STANDARD_GRAVITY = 9.80665f;
@@ -39,6 +42,22 @@ void connectWiFi() {
   Serial.println();
   Serial.print("WiFi conectado. IP: ");
   Serial.println(WiFi.localIP());
+}
+
+void setupOTA() {
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA
+      .onStart([]() { Serial.println("Iniciando actualización OTA."); })
+      .onEnd([]() { Serial.println("\nActualización OTA completada."); })
+      .onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("OTA: %u%%\r", progress * 100 / total);
+      })
+      .onError([](ota_error_t error) {
+        Serial.printf("Error OTA [%u]\n", error);
+      });
+  ArduinoOTA.begin();
+  Serial.print("OTA disponible como: ");
+  Serial.println(OTA_HOSTNAME);
 }
 
 String directionFor(float x, float y, float z) {
@@ -134,10 +153,12 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
   connectWiFi();
+  setupOTA();
   setupWebSocket();
 }
 
 void loop() {
+  ArduinoOTA.handle();
   webSocket.loop();
 
   if (millis() - lastSampleAt >= SAMPLE_INTERVAL_MS) {
