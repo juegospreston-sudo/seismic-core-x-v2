@@ -5,5 +5,9 @@ services:
       dockerfile: app/Dockerfile
     environment:
       PORT: 8000
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      ALERTAS_EMAILS: ${ALERTAS_EMAILS:-}
+      ALERTAS_SENDER_EMAIL: ${ALERTAS_SENDER_EMAIL:-}
+      ALERTAS_SENDER_NAME: ${ALERTAS_SENDER_NAME:-MONITOR SÍSMICO}
     ports:
       - "8000:8000"

@@ -7,6 +7,15 @@ services:
     dockerContext: .
     healthCheckPath: /health
     autoDeploy: true
+    envVars:
+      - key: BREVO_API_KEY
+        sync: false
+      - key: ALERTAS_EMAILS
+        sync: false
+      - key: ALERTAS_SENDER_EMAIL
+        sync: false
+      - key: ALERTAS_SENDER_NAME
+        value: MONITOR SÍSMICO
   - type: web
     name: seismic-core-x-dashboard
     runtime: static

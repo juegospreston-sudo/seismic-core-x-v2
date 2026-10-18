@@ -69,3 +69,28 @@ webSocket.sendTXT("{\"value\":0.041,\"direction\":\"Z\"}");
 
 La API HTTP `GET /api/telemetry` devuelve el último estado y `GET /health`
 permite verificar que el servicio está disponible.
+
+## Alertas por correo con Brevo
+
+Las alertas se envían de forma asíncrona para no detener la recepción de
+muestras. Se envía una alerta de movimiento sostenido después de `3` segundos
+por encima del umbral brusco y una alerta crítica al alcanzar `0.150`.
+
+Configura estas variables en Render o en tu entorno local:
+
+```text
+BREVO_API_KEY=tu_clave_privada
+ALERTAS_EMAILS=destinatario1@ejemplo.com,destinatario2@ejemplo.com
+```
+
+Puedes copiar `backend/.env.example` como `backend/.env` para completar la
+configuración local. Docker Compose toma automáticamente estas variables del
+entorno donde se ejecuta:
+
+```powershell
+Copy-Item backend\.env.example backend\.env
+docker compose --env-file backend\.env up --build
+```
+
+El remitente debe estar verificado en Brevo. La telemetría incluye el resultado
+del último envío en `email_type`, `email_ok`, `email_detail` y `email_time`.

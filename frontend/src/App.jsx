@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
+import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 
 const MAX_SAMPLES = 160;
+const SENSOR_LOCATION = [-33.4937, -70.7474];
 const initialTelemetry = {
   system_status: "ESPERANDO SENSOR",
   magnitude: 0,
@@ -44,6 +47,7 @@ function App() {
   const [samples, setSamples] = useState([]);
   const [connected, setConnected] = useState(false);
   const chartRef = useRef(null);
+  const radarRef = useRef(null);
 
   const receiveTelemetry = useCallback((event) => {
     try {
@@ -143,6 +147,82 @@ function App() {
     });
   }, [samples]);
 
+  useEffect(() => {
+    const canvas = radarRef.current;
+    const context = canvas.getContext("2d");
+    let frame;
+    let angle = 0;
+
+    const draw = () => {
+      const size = canvas.clientWidth;
+      const ratio = window.devicePixelRatio || 1;
+      if (canvas.width !== size * ratio) {
+        canvas.width = size * ratio;
+        canvas.height = size * ratio;
+      }
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      const center = size / 2;
+      const radius = size * 0.43;
+      context.clearRect(0, 0, size, size);
+      context.strokeStyle = "rgba(57,255,155,.28)";
+      context.lineWidth = 1;
+      for (let ring = 1; ring <= 4; ring += 1) {
+        context.beginPath();
+        context.arc(center, center, radius * ring / 4, 0, Math.PI * 2);
+        context.stroke();
+      }
+      context.beginPath();
+      context.moveTo(center - radius, center);
+      context.lineTo(center + radius, center);
+      context.moveTo(center, center - radius);
+      context.lineTo(center, center + radius);
+      context.stroke();
+
+      const sweep = context.createRadialGradient(center, center, 0, center, center, radius);
+      sweep.addColorStop(0, "rgba(57,255,155,.02)");
+      sweep.addColorStop(1, "rgba(57,255,155,.20)");
+      context.beginPath();
+      context.moveTo(center, center);
+      context.arc(center, center, radius, angle - 0.45, angle);
+      context.closePath();
+      context.fillStyle = sweep;
+      context.fill();
+      context.beginPath();
+      context.moveTo(center, center);
+      context.lineTo(center + Math.cos(angle) * radius, center + Math.sin(angle) * radius);
+      context.strokeStyle = "rgba(99,255,180,.95)";
+      context.lineWidth = 2;
+      context.shadowColor = "#39ff9b";
+      context.shadowBlur = 12;
+      context.stroke();
+      context.shadowBlur = 0;
+
+      if (connected && telemetry.magnitude > 0.001) {
+        const intensity = Math.min(telemetry.magnitude / telemetry.critical_threshold, 1);
+        const distance = radius * (0.2 + intensity * 0.65);
+        const pointX = center + Math.cos(angle * 0.7) * distance;
+        const pointY = center + Math.sin(angle * 0.7) * distance;
+        const color = telemetry.level >= 4 ? "#ff5874" : telemetry.level === 3 ? "#ffad70" : telemetry.level === 2 ? "#ffd66b" : "#63f5b0";
+        context.beginPath();
+        context.arc(pointX, pointY, 5 + intensity * 7, 0, Math.PI * 2);
+        context.fillStyle = color;
+        context.shadowColor = color;
+        context.shadowBlur = 20;
+        context.fill();
+        context.beginPath();
+        context.arc(pointX, pointY, 12 + intensity * 10, 0, Math.PI * 2);
+        context.strokeStyle = color;
+        context.lineWidth = 1.5;
+        context.stroke();
+        context.shadowBlur = 0;
+      }
+      angle = (angle + 0.012) % (Math.PI * 2);
+      frame = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(frame);
+  }, [connected, telemetry.magnitude, telemetry.level, telemetry.critical_threshold]);
+
   const statusClass = `status level${telemetry.level}${connected ? "" : " offline"}`;
   const intensity = Math.min(100, Math.max(0, telemetry.relative_intensity || 0));
   const sensorText = telemetry.connected_sensors
@@ -171,13 +251,40 @@ function App() {
           <section className="panel radar-panel">
             <div className="heading">01 / RADAR DE ACTIVIDAD</div>
             <div className="radar-wrap">
-              <div className="radar-grid" />
-              <div className="radar-sweep" />
-              <div className="radar-ring ring-one" />
-              <div className="radar-ring ring-two" />
-              <div className="radar-ring ring-three" />
-              <div className="radar-point" style={{ transform: `rotate(${telemetry.magnitude * 900}deg)` }} />
-              <div className="radar-center" />
+              <MapContainer
+                center={SENSOR_LOCATION}
+                zoom={15}
+                zoomControl={false}
+                dragging={false}
+                scrollWheelZoom={false}
+                doubleClickZoom={false}
+                touchZoom={false}
+                keyboard={false}
+                attributionControl={false}
+                className="radar-map"
+              >
+                <TileLayer
+                  attribution="&copy; OpenStreetMap contributors"
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  maxZoom={19}
+                />
+                <CircleMarker
+                  center={SENSOR_LOCATION}
+                  radius={Math.max(3, Math.min(18, telemetry.magnitude * 100))}
+                  pathOptions={{
+                    color: telemetry.level >= 4 ? "#ff5874" : telemetry.level === 3 ? "#ffad70" : "#63f5b0",
+                    fillColor: telemetry.level >= 4 ? "#ff5874" : telemetry.level === 3 ? "#ffad70" : "#63f5b0",
+                    fillOpacity: connected ? 0.85 : 0.25,
+                    weight: 2,
+                  }}
+                  
+                >
+                  <Tooltip permanent direction="top" offset={[0, -2]} className="street-text-label">
+                    PUERTO CÁRDENAS
+                  </Tooltip>
+                </CircleMarker>
+              </MapContainer>
+              <canvas ref={radarRef} className="radar-canvas" aria-label="Radar de actividad" />
             </div>
             <div className="radar-label">{sensorText}</div>
             <div className="clock-panel">
@@ -213,6 +320,10 @@ function App() {
             <div className="heading chart-heading">04 / SEÑAL EN VIVO</div>
             <div ref={chartRef} className="history-chart" aria-label="Gráfica de señal en vivo" />
             <InfoRow label="MUESTRAS RECIBIDAS" value={telemetry.samples_received} />
+            <InfoRow
+              label="CORREO"
+              value={telemetry.email_type ? `${telemetry.email_type} · ${telemetry.email_ok === true ? "OK" : telemetry.email_ok === false ? "ERROR" : "PENDIENTE"}` : "SIN ENVÍOS"}
+            />
             <div className="chart-caption">{chartLabel}</div>
           </section>
         </div>

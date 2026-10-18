@@ -8,6 +8,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.core.config import SeismicSettings, settings
 from app.schemas.telemetry import Telemetry, parse_sensor_payload
+from app.services.email_service import email_alert_service
 
 
 class SeismicService:
@@ -26,6 +27,11 @@ class SeismicService:
         self._ema = 0.0
         self._event_started_at: float | None = None
         self._event_peak = 0.0
+        self._last_activity_at: float | None = None
+        self._sustained_started_at: float | None = None
+        self._precursor_sent = False
+        self._critical_sent = False
+        self._critical_until: float | None = None
         self._last_sample_at: float | None = None
         self._dashboard_clients: set[WebSocket] = set()
         self._sensor_clients: set[WebSocket] = set()
@@ -62,22 +68,73 @@ class SeismicService:
             self._window = self._window[-self.settings.moving_average_window :]
             average = sum(self._window) / len(self._window)
             active = filtered >= self.settings.movement_threshold
+            temblor = (
+                value >= self.settings.sudden_threshold
+                or filtered >= self.settings.sudden_threshold
+            )
+            critical = (
+                value >= self.settings.critical_threshold
+                or filtered >= self.settings.critical_threshold
+            )
 
             if active and self._event_started_at is None:
                 self._event_started_at = now
                 self._event_peak = filtered
+                self._precursor_sent = False
+                self._critical_sent = False
             elif active:
                 self._event_peak = max(self._event_peak, filtered)
             elif self._event_started_at is not None:
-                self._event_started_at = None
-                self._event_peak = 0.0
+                if self._last_activity_at and now - self._last_activity_at >= self.settings.event_end_seconds:
+                    self._event_started_at = None
+                    self._event_peak = 0.0
+
+            if active:
+                self._last_activity_at = now
+            if temblor:
+                self._sustained_started_at = self._sustained_started_at or now
+            else:
+                self._sustained_started_at = None
 
             duration = (
                 now - self._event_started_at
                 if self._event_started_at is not None
                 else 0.0
             )
+            sustained_duration = (
+                now - self._sustained_started_at
+                if self._sustained_started_at is not None
+                else 0.0
+            )
+            if critical:
+                self._critical_until = now + self.settings.alert_stable_seconds
+                if not self._critical_sent:
+                    self._critical_sent = True
+                    email_alert_service.send_async(
+                        "CRITICAL",
+                        "ALERTA CRÍTICA - ACTIVIDAD SÍSMICA INTENSA",
+                        value,
+                        filtered,
+                        duration,
+                        "ALERTA CRÍTICA",
+                    )
+            elif (
+                sustained_duration >= self.settings.sustained_seconds
+                and not self._precursor_sent
+            ):
+                self._precursor_sent = True
+                email_alert_service.send_async(
+                    "SUSTAINED_MOVEMENT",
+                    "MOVIMIENTO SOSTENIDO - REVISAR TELEMETRÍA",
+                    value,
+                    filtered,
+                    duration,
+                    "MOVIMIENTO SOSTENIDO",
+                )
+
             level, classification = self._classify(filtered, duration)
+            if critical or (self._critical_until and now < self._critical_until):
+                level, classification = 4, "CRÍTICO"
             events = self.telemetry.events + (
                 1 if active and self.telemetry.level == 1 and level > 1 else 0
             )
@@ -112,6 +169,7 @@ class SeismicService:
                 critical_threshold=self.settings.critical_threshold,
                 samples_received=self.telemetry.samples_received + 1,
                 connected_sensors=len(self._sensor_clients),
+                **self._email_fields(),
             )
             await self.broadcast()
 
@@ -154,6 +212,16 @@ class SeismicService:
         if value >= self.settings.movement_threshold:
             return 2, "MOVIMIENTO"
         return 1, "SIN ACTIVIDAD"
+
+    def _email_fields(self) -> dict[str, Any]:
+        status = email_alert_service.status()
+        return {
+            "email_type": status["type"],
+            "email_ok": status["ok"],
+            "email_detail": status["detail"],
+            "email_time": status["time"],
+            "configured_recipients": status["recipients"],
+        }
 
 
 seismic_service = SeismicService()

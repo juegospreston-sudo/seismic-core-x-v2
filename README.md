@@ -292,3 +292,24 @@ estático en Render y se ejecuta con Vite durante el desarrollo local.
 - Para guardar históricos, eventos y gráficas se debe agregar una base de datos.
 - Un plan gratuito puede suspenderse cuando no recibe tráfico; para monitoreo
   permanente se recomienda un servicio activo.
+
+## Alertas por correo
+
+El backend puede enviar alertas usando Brevo. Configura en Render, únicamente
+en el servicio `seismic-core-x-api`:
+
+```text
+BREVO_API_KEY=tu_clave_privada
+ALERTAS_EMAILS=destinatario@ejemplo.com
+ALERTAS_SENDER_EMAIL=remitente-verificado@ejemplo.com
+ALERTAS_SENDER_NAME=MONITOR SÍSMICO
+```
+
+`ALERTAS_SENDER_EMAIL` debe ser una dirección verificada en Brevo. No agregues
+la clave API al repositorio ni al archivo `.env.example`.
+
+## Firmware ESP32
+
+El firmware del ESP32 con MPU6050 está en [firmware/](firmware/). Consulta
+[firmware/README.md](firmware/README.md) para el cableado, compilación y
+configuración de la URL WebSocket local o de Render.

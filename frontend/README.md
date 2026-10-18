@@ -10,6 +10,12 @@ copy .env.example .env
 npm run dev
 ```
 
+Puedes copiar `.env.example` como `.env` para configurar la URL del backend:
+
+```powershell
+Copy-Item .env.example .env
+```
+
 Por defecto se conecta a `http://localhost:8000` y transforma automáticamente
 la URL en `ws://localhost:8000/ws/dashboard`. Si existe un archivo `.env`
 local, verifica que no tenga `VITE_API_URL=http://localhost:5173`; ese puerto

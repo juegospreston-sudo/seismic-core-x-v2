@@ -69,13 +69,12 @@ main { padding: 16px; max-width: 1800px; margin: auto; }
   background: radial-gradient(circle, #08241f 0%, #03120d 65%);
   box-shadow: 0 0 0 5px rgba(4,19,15,.96), 0 0 0 7px rgba(57,255,155,.35), 0 0 45px rgba(57,255,155,.22);
 }
-.radar-grid { position: absolute; inset: 10%; border: 1px solid #63f5b055; border-radius: 50%; background: linear-gradient(90deg, transparent 49.8%, #63f5b055 50%, transparent 50.2%), linear-gradient(0deg, transparent 49.8%, #63f5b055 50%, transparent 50.2%); }
-.radar-ring { position: absolute; border: 1px solid #63f5b055; border-radius: 50%; }
-.ring-one { inset: 25%; }.ring-two { inset: 40%; }.ring-three { inset: 10%; }
-.radar-sweep { position: absolute; inset: 0; transform-origin: center; background: conic-gradient(from 0deg, transparent 0 83%, #63f5b055 95%, transparent 100%); animation: sweep 3s linear infinite; }
-@keyframes sweep { to { transform: rotate(360deg); } }
-.radar-center { position: absolute; inset: 48%; border-radius: 50%; background: var(--green); box-shadow: 0 0 18px var(--green); }
-.radar-point { position: absolute; inset: 12% 50% 50%; transform-origin: bottom center; border-left: 2px solid var(--cyan); filter: drop-shadow(0 0 5px var(--cyan)); }
+.radar-map { position: absolute; inset: 0; z-index: 1; background: #03120d; isolation: isolate; border-radius: 50%; overflow: hidden; }
+.radar-map::after { content: ""; position: absolute; inset: 0; z-index: 450; pointer-events: none; background: radial-gradient(ellipse at 40% 40%, rgba(63,245,176,.15) 0%, transparent 65%), linear-gradient(145deg, rgba(2,24,18,.15), rgba(0,8,6,.35)); mix-blend-mode: screen; }
+.radar-map .leaflet-tile-pane { filter: invert(.9) hue-rotate(185deg) brightness(.85) contrast(1.4) saturate(1.2); opacity: .78; }
+.radar-map.leaflet-container { background: #03120d !important; }
+.radar-canvas { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; }
+.street-text-label { background: transparent; border: 0; box-shadow: none; color: #fff; font: 700 11px Inter, Arial, sans-serif; letter-spacing: .8px; text-shadow: 0 0 5px #000, 0 0 9px #000, 0 0 12px #39ff9b; white-space: nowrap; }
 .radar-label { margin-top: 17px; color: #c8eee7; font-size: 12px; font-weight: 700; letter-spacing: 1.8px; text-align: center; text-shadow: 0 0 14px rgba(45,220,180,.16); }
 .clock-panel { display: flex; justify-content: center; margin: 13px auto 0; padding: 12px; border: 1px solid var(--line); background: #000a14b3; color: var(--muted); }
 .clock-panel strong { color: var(--cyan); font-size: clamp(20px, 2.5vw, 28px); letter-spacing: 3px; font-weight: 600; }

@@ -59,6 +59,11 @@ class Telemetry(BaseModel):
     critical_threshold: float = 0.150
     samples_received: int = 0
     connected_sensors: int = 0
+    email_type: str | None = None
+    email_ok: bool | None = None
+    email_detail: str = "Aún no se ha enviado ninguna alerta"
+    email_time: str | None = None
+    configured_recipients: int = 0
 
 
 def parse_sensor_payload(payload: Any) -> SensorReading:
