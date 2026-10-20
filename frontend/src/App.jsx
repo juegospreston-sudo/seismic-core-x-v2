@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
+import { CircleMarker, MapContainer, TileLayer, Tooltip } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 
 const MAX_SAMPLES = 160;
+const SENSOR_LOCATION = [-33.4937, -70.7474];
+
 const initialTelemetry = {
   system_status: "ESPERANDO SENSOR",
   magnitude: 0,
@@ -28,11 +32,9 @@ const initialTelemetry = {
 
 function websocketUrl() {
   const configured = import.meta.env.VITE_API_URL || "http://localhost:8000";
-  if (configured) {
-    const url = new URL(configured);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    return `${url.origin}/ws/dashboard`;
-  }
+  const url = new URL(configured);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return `${url.origin}/ws/dashboard`;
 }
 
 function format(value, digits = 6) {
@@ -43,35 +45,33 @@ function App() {
   const [telemetry, setTelemetry] = useState(initialTelemetry);
   const [samples, setSamples] = useState([]);
   const [connected, setConnected] = useState(false);
+
   const chartRef = useRef(null);
   const radarRef = useRef(null);
-  const radarDataRef = useRef({ connected: false, magnitude: 0, filtered_signal: 0, level: 1, movement_threshold: 0.035, critical_threshold: 0.15 });
+  const radarStateRef = useRef({ connected, telemetry });
 
   useEffect(() => {
-    radarDataRef.current = {
-      connected,
-      magnitude: Number(telemetry.magnitude || 0),
-      filtered_signal: Number(telemetry.filtered_signal || 0),
-      level: Number(telemetry.level || 1),
-      movement_threshold: Number(telemetry.movement_threshold || 0.035),
-      critical_threshold: Number(telemetry.critical_threshold || 0.15),
-    };
-  }, [connected, telemetry.magnitude, telemetry.filtered_signal, telemetry.level, telemetry.movement_threshold, telemetry.critical_threshold]);
+    radarStateRef.current = { connected, telemetry };
+  }, [connected, telemetry]);
 
   const receiveTelemetry = useCallback((event) => {
     try {
       const next = JSON.parse(event.data);
       if (next.error) return;
+
       setTelemetry((previous) => ({ ...previous, ...next }));
-      setSamples((previous) => [
-        ...previous,
-        {
-          value: Number(next.filtered_signal || 0),
-          average: Number(next.moving_average || 0),
-        },
-      ].slice(-MAX_SAMPLES));
+
+      setSamples((previous) =>
+        [
+          ...previous,
+          {
+            value: Number(next.filtered_signal || 0),
+            average: Number(next.moving_average || 0),
+          },
+        ].slice(-MAX_SAMPLES)
+      );
     } catch {
-      // Ignore malformed dashboard messages; the backend reports input errors.
+      // Ignora mensajes de telemetría incorrectos.
     }
   }, []);
 
@@ -82,16 +82,20 @@ function App() {
 
     const connect = () => {
       socket = new WebSocket(websocketUrl());
+
       socket.addEventListener("open", () => setConnected(true));
       socket.addEventListener("message", receiveTelemetry);
+
       socket.addEventListener("close", () => {
         setConnected(false);
         if (!stopped) retry = window.setTimeout(connect, 2000);
       });
+
       socket.addEventListener("error", () => setConnected(false));
     };
 
     connect();
+
     return () => {
       stopped = true;
       window.clearTimeout(retry);
@@ -100,8 +104,11 @@ function App() {
   }, [receiveTelemetry]);
 
   useEffect(() => {
+    if (!chartRef.current) return;
+
     const chart = echarts.init(chartRef.current);
     const resize = () => chart.resize();
+
     chart.setOption({
       animation: false,
       grid: { left: 36, right: 14, top: 14, bottom: 24 },
@@ -137,7 +144,9 @@ function App() {
         },
       ],
     });
+
     window.addEventListener("resize", resize);
+
     return () => {
       window.removeEventListener("resize", resize);
       chart.dispose();
@@ -145,8 +154,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const chart = echarts.getInstanceByDom(chartRef.current);
+    const chart = chartRef.current
+      ? echarts.getInstanceByDom(chartRef.current)
+      : null;
+
     if (!chart) return;
+
     chart.setOption({
       xAxis: { data: samples.map((_, index) => index + 1) },
       series: [
@@ -156,169 +169,164 @@ function App() {
     });
   }, [samples]);
 
+  // RADAR: ondas circulares como una gota de agua.
+  // El mapa original se conserva debajo de la animación.
   useEffect(() => {
     const canvas = radarRef.current;
-    if (!canvas) return undefined;
+    if (!canvas) return;
+
     const context = canvas.getContext("2d");
-    if (!context) return undefined;
+    if (!context) return;
+
     let frame;
-    let angle = 0;
-    let pulse = 0;
+    let width = 0;
+    let height = 0;
+    let ratio = 1;
 
-    const draw = () => {
-      const size = Math.max(1, canvas.clientWidth || 320);
-      const height = Math.max(1, canvas.clientHeight || size);
-      const ratio = window.devicePixelRatio || 1;
-      if (canvas.width !== size * ratio || canvas.height !== height * ratio) {
-        canvas.width = size * ratio;
-        canvas.height = height * ratio;
-      }
+    const startTime = performance.now();
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      width = rect.width;
+      height = rect.height;
+      ratio = Math.min(window.devicePixelRatio || 1, 2);
+
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, size, height);
+    };
 
-      const centerX = size / 2;
-      const centerY = height / 2;
-      const radius = Math.min(size, height) * 0.43;
-      const data = radarDataRef.current;
-      const signal = Math.max(data.magnitude, data.filtered_signal);
-      const moving = data.connected && (data.level >= 2 || signal >= data.movement_threshold);
-      const color = !data.connected ? "#49636a"
-        : data.level >= 4 || signal >= data.critical_threshold ? "#ff4d67"
-        : data.level === 3 ? "#ff963d"
-        : moving || data.level === 2 ? "#ffd447"
-        : "#39ff9b";
-      const intensity = Math.max(0, Math.min(1, signal / Math.max(data.critical_threshold, 0.001)));
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    resize();
 
-      // Fondo oscuro y esfera luminosa
-      const background = context.createRadialGradient(centerX, centerY, radius * 0.05, centerX, centerY, radius * 1.2);
-      background.addColorStop(0, moving ? "rgba(255,212,71,0.11)" : "rgba(57,255,155,0.10)");
-      background.addColorStop(0.72, "rgba(3,20,24,0.96)");
-      background.addColorStop(1, "rgba(1,8,12,0.99)");
-      context.fillStyle = background;
-      context.fillRect(0, 0, size, height);
+    const draw = (now) => {
+      context.clearRect(0, 0, width, height);
 
-      // Halo exterior de la esfera
-      context.save();
-      context.shadowColor = color;
-      context.shadowBlur = moving ? 24 : 15;
-      context.strokeStyle = color;
-      context.globalAlpha = data.connected ? 0.72 : 0.25;
-      context.lineWidth = 1.5;
-      context.beginPath();
-      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-      context.stroke();
-      context.restore();
+      const { connected: isConnected, telemetry: data } =
+        radarStateRef.current;
 
-      // Esfera 3D con gradiente radial
-      const sphere = context.createRadialGradient(
-        centerX - radius * 0.32, centerY - radius * 0.36, radius * 0.04,
-        centerX, centerY, radius
+      const magnitude = Math.max(
+        Number(data.magnitude) || 0,
+        Number(data.filtered_signal) || 0
       );
-      sphere.addColorStop(0, moving ? "rgba(255,245,173,0.30)" : "rgba(180,255,219,0.25)");
-      sphere.addColorStop(0.35, moving ? "rgba(181,151,28,0.22)" : "rgba(18,145,85,0.23)");
-      sphere.addColorStop(0.78, "rgba(3,44,37,0.72)");
-      sphere.addColorStop(1, "rgba(0,8,13,0.97)");
-      context.fillStyle = sphere;
-      context.beginPath();
-      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-      context.fill();
 
-      // Anillos concéntricos de la esfera
+      const level = Number(data.level) || 0;
+      const movementThreshold = Number(data.movement_threshold) || 0.035;
+      const criticalThreshold = Number(data.critical_threshold) || 0.15;
+
+      // Color según la actividad sísmica informada por el sistema.
+      let color = "#39ff78";
+
+      if (level >= 4 || magnitude >= criticalThreshold) {
+        color = "#ff3030";
+      } else if (level >= 3) {
+        color = "#ff8c32";
+      } else if (
+        level >= 2 ||
+        magnitude >= movementThreshold
+      ) {
+        color = "#ffe34a";
+      }
+
+      const moving =
+        isConnected &&
+        (level >= 2 || magnitude >= movementThreshold);
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const maxRadius = Math.max(8, Math.min(width, height) * 0.46);
+
+      // Las ondas se expanden más rápido cuando hay movimiento.
+      const speed = moving ? 1.15 : 0.42;
+      const cycle = ((now - startTime) / 1000) * speed;
+
+      // Guías circulares sutiles sobre el mapa.
       context.save();
-      context.beginPath();
-      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-      context.clip();
-      context.strokeStyle = color;
+      context.strokeStyle = "rgba(57,255,155,0.22)";
       context.lineWidth = 1;
+
       for (let ring = 1; ring <= 4; ring += 1) {
-        context.globalAlpha = 0.13 + ring * 0.035;
         context.beginPath();
-        context.arc(centerX, centerY, radius * ring / 4, 0, Math.PI * 2);
+        context.arc(
+          centerX,
+          centerY,
+          (maxRadius * ring) / 4,
+          0,
+          Math.PI * 2
+        );
         context.stroke();
       }
-      // Meridianos para dar apariencia esférica
-      context.globalAlpha = 0.22;
-      for (const squash of [0.32, 0.62]) {
-        context.beginPath();
-        context.ellipse(centerX, centerY, radius * squash, radius, angle * 0.12, 0, Math.PI * 2);
-        context.stroke();
-      }
-      context.beginPath();
-      context.ellipse(centerX, centerY, radius, radius * 0.34, 0, 0, Math.PI * 2);
-      context.stroke();
+
       context.restore();
 
-      // Barrido radar suave
-      const sweep = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
-      sweep.addColorStop(0, `${color}00`);
-      sweep.addColorStop(1, data.connected ? "rgba(57,255,155,0.10)" : "rgba(90,120,130,0.04)");
-      context.fillStyle = sweep;
-      context.beginPath();
-      context.moveTo(centerX, centerY);
-      context.arc(centerX, centerY, radius, angle - 0.55, angle);
-      context.closePath();
-      context.fill();
-      context.strokeStyle = color;
-      context.globalAlpha = 0.75;
-      context.lineWidth = 1.5;
-      context.beginPath();
-      context.moveTo(centerX, centerY);
-      context.lineTo(centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius);
-      context.stroke();
-      context.globalAlpha = 1;
+      // Tres ondas nacen en el centro y se expanden como ondas de agua.
+      for (let i = 0; i < 3; i += 1) {
+        const phase = (cycle + i / 3) % 1;
+        const radius = 3 + phase * maxRadius;
+        const opacity = (1 - phase) * (moving ? 0.9 : 0.38);
 
-      // Cuando hay movimiento real, nacen ondas pequeñas en el centro y crecen
-      if (moving) {
-        pulse = (pulse + 0.012 + intensity * 0.018) % 1;
-        for (let wave = 0; wave < 3; wave += 1) {
-          const phase = (pulse + wave / 3) % 1;
-          const waveRadius = radius * (0.06 + phase * 0.88);
-          context.beginPath();
-          context.arc(centerX, centerY, waveRadius, 0, Math.PI * 2);
-          context.strokeStyle = color;
-          context.lineWidth = 1.2 + intensity * 1.8;
-          context.globalAlpha = (1 - phase) * (0.35 + intensity * 0.65);
-          context.shadowColor = color;
-          context.shadowBlur = 10 + intensity * 18;
-          context.stroke();
-        }
-        context.globalAlpha = 1;
-        context.shadowBlur = 0;
-        // Núcleo central: se ilumina con la señal
+        context.save();
         context.beginPath();
-        context.arc(centerX, centerY, 3 + intensity * 7, 0, Math.PI * 2);
-        context.fillStyle = color;
+        context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        context.strokeStyle = color;
+        context.globalAlpha = opacity;
+        context.lineWidth = moving ? 2.5 : 1.5;
         context.shadowColor = color;
-        context.shadowBlur = 16 + intensity * 20;
-        context.fill();
-        context.shadowBlur = 0;
-      } else {
-        // Pulso lento en verde cuando está estable
-        const breathing = 0.5 + 0.5 * Math.sin(angle * 1.4);
-        context.beginPath();
-        context.arc(centerX, centerY, 3 + breathing * 2, 0, Math.PI * 2);
-        context.fillStyle = color;
-        context.globalAlpha = data.connected ? 0.45 + breathing * 0.45 : 0.25;
-        context.fill();
-        context.globalAlpha = 1;
+        context.shadowBlur = moving ? 15 : 6;
+        context.stroke();
+        context.restore();
       }
 
-      angle = (angle + (moving ? 0.018 : 0.008)) % (Math.PI * 2);
+      // Punto central: lugar donde cae la gota.
+      context.save();
+
+      const pulse = moving
+        ? 3.5 + Math.sin(now / 120) * 1.2
+        : 2.5;
+
+      context.beginPath();
+      context.arc(centerX, centerY, pulse, 0, Math.PI * 2);
+      context.fillStyle = color;
+      context.shadowColor = color;
+      context.shadowBlur = moving ? 20 : 8;
+      context.fill();
+
+      context.restore();
+
       frame = requestAnimationFrame(draw);
     };
 
-    draw();
-    return () => cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(draw);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      context.clearRect(0, 0, width, height);
+    };
   }, []);
 
-  const statusClass = `status level${telemetry.level}${connected ? "" : " offline"}`;
-  const intensity = Math.min(100, Math.max(0, telemetry.relative_intensity || 0));
+  const statusClass = `status level${telemetry.level}${
+    connected ? "" : " offline"
+  }`;
+
+  const intensity = Math.min(
+    100,
+    Math.max(0, telemetry.relative_intensity || 0)
+  );
+
   const sensorText = telemetry.connected_sensors
-    ? `${telemetry.connected_sensors} SENSOR${telemetry.connected_sensors > 1 ? "ES" : ""}`
+    ? `${telemetry.connected_sensors} SENSOR${
+        telemetry.connected_sensors > 1 ? "ES" : ""
+      }`
     : "SIN SENSOR";
+
   const chartLabel = useMemo(
     () => `${samples.length} muestras en ventana`,
-    [samples.length],
+    [samples.length]
   );
 
   return (
@@ -326,11 +334,18 @@ function App() {
       <header>
         <div>
           <div className="logo">SEISMIC CORE X</div>
-          <div className="sub">EL SISTEMA ESTÁ DETECTANDO · TELEMETRÍA EN VIVO</div>
+          <div className="sub">
+            EL SISTEMA ESTÁ DETECTANDO · TELEMETRÍA EN VIVO
+          </div>
         </div>
+
         <div className="connection">
-          <span className={`dot ${connected ? "online" : "offline-dot"}`} />
-          {connected ? "WEBSOCKET CONECTADO" : "REINTENTANDO CONEXIÓN"}
+          <span
+            className={`dot ${connected ? "online" : "offline-dot"}`}
+          />
+          {connected
+            ? "WEBSOCKET CONECTADO"
+            : "REINTENTANDO CONEXIÓN"}
         </div>
       </header>
 
@@ -338,56 +353,198 @@ function App() {
         <div className="grid">
           <section className="panel radar-panel">
             <div className="heading">01 / RADAR DE ACTIVIDAD</div>
+
             <div className="radar-wrap">
+              <MapContainer
+                center={SENSOR_LOCATION}
+                zoom={15}
+                zoomControl={false}
+                dragging={false}
+                scrollWheelZoom={false}
+                doubleClickZoom={false}
+                touchZoom={false}
+                keyboard={false}
+                attributionControl={false}
+                className="radar-map"
+              >
+                <TileLayer
+                  attribution="&copy; OpenStreetMap contributors"
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  maxZoom={19}
+                />
+
+                <CircleMarker
+                  center={SENSOR_LOCATION}
+                  radius={Math.max(
+                    3,
+                    Math.min(18, telemetry.magnitude * 100)
+                  )}
+                  pathOptions={{
+                    color:
+                      telemetry.level >= 4
+                        ? "#ff3030"
+                        : telemetry.level >= 3
+                        ? "#ff8c32"
+                        : telemetry.level >= 2
+                        ? "#ffe34a"
+                        : "#39ff78",
+                    fillColor:
+                      telemetry.level >= 4
+                        ? "#ff3030"
+                        : telemetry.level >= 3
+                        ? "#ff8c32"
+                        : telemetry.level >= 2
+                        ? "#ffe34a"
+                        : "#39ff78",
+                    fillOpacity: connected ? 0.85 : 0.25,
+                    weight: 2,
+                  }}
+                >
+                  <Tooltip
+                    permanent
+                    direction="top"
+                    offset={[0, -2]}
+                    className="street-text-label"
+                  >
+                    PUERTO CÁRDENAS
+                  </Tooltip>
+                </CircleMarker>
+              </MapContainer>
+
               <canvas
                 ref={radarRef}
                 className="radar-canvas"
-                aria-label="Esfera sísmica animada: verde estable, amarillo en movimiento, naranja intenso y rojo crítico"
-                role="img"
+                aria-label="Ondas de actividad sísmica"
               />
             </div>
+
             <div className="radar-label">{sensorText}</div>
+
             <div className="clock-panel">
-              <strong>{new Date().toLocaleTimeString("es-AR", { hour12: false })}</strong>
+              <strong>
+                {new Date().toLocaleTimeString("es-AR", {
+                  hour12: false,
+                })}
+              </strong>
             </div>
           </section>
 
           <section className="panel">
             <div className="heading">02 / ESTADO DEL SISTEMA</div>
-            <div className={statusClass}>{connected ? telemetry.system_status : "SIN CONEXIÓN"}</div>
-            <div className="metrics">
-              <Metric label="MAGNITUD" value={format(telemetry.magnitude)} unit="VALOR RECIBIDO" />
-              <Metric label="SEÑAL FILTRADA" value={format(telemetry.filtered_signal)} unit="PROMEDIO MÓVIL" />
-              <Metric label="NIVEL" value={telemetry.level} unit={telemetry.internal_classification} />
-              <Metric label="EVENTOS" value={telemetry.events} unit="CONTADOR DE EVENTOS" />
+
+            <div className={statusClass}>
+              {connected ? telemetry.system_status : "SIN CONEXIÓN"}
             </div>
-            <InfoRow label="INTENSIDAD RELATIVA" value={`${intensity.toFixed(1)}%`} />
-            <div className="bar"><div className="bar-inner" style={{ width: `${intensity}%` }} /></div>
+
+            <div className="metrics">
+              <Metric
+                label="MAGNITUD"
+                value={format(telemetry.magnitude)}
+                unit="VALOR RECIBIDO"
+              />
+              <Metric
+                label="SEÑAL FILTRADA"
+                value={format(telemetry.filtered_signal)}
+                unit="PROMEDIO MÓVIL"
+              />
+              <Metric
+                label="NIVEL"
+                value={telemetry.level}
+                unit={telemetry.internal_classification}
+              />
+              <Metric
+                label="EVENTOS"
+                value={telemetry.events}
+                unit="CONTADOR DE EVENTOS"
+              />
+            </div>
+
+            <InfoRow
+              label="INTENSIDAD RELATIVA"
+              value={`${intensity.toFixed(1)}%`}
+            />
+
+            <div className="bar">
+              <div
+                className="bar-inner"
+                style={{ width: `${intensity}%` }}
+              />
+            </div>
           </section>
 
           <section className="panel side">
             <div className="heading">03 / TELEMETRÍA</div>
+
             <InfoRow label="COMUNICACIÓN" value={telemetry.communication} />
             <InfoRow label="CALIBRACIÓN" value={telemetry.calibration} />
             <InfoRow label="DIRECCIÓN" value={telemetry.direction} />
-            <InfoRow label="PICO DEL EVENTO" value={format(telemetry.event_peak)} />
-            <InfoRow label="DURACIÓN" value={`${Number(telemetry.event_duration || 0).toFixed(2)} s`} />
-            <InfoRow label="ÚLTIMA SEÑAL" value={`${Number(telemetry.last_signal || 0).toFixed(1)} s`} />
-            <InfoRow label="UMBRAL MOVIMIENTO" value={format(telemetry.movement_threshold, 3)} />
-            <InfoRow label="UMBRAL BRUSCO" value={format(telemetry.sudden_threshold, 3)} />
-            <InfoRow label="UMBRAL ACTIVIDAD SOSTENIDA" value={`${format(telemetry.sustained_threshold, 3)} / ${telemetry.sustained_seconds} s`} />
-            <InfoRow label="UMBRAL CRÍTICO" value={format(telemetry.critical_threshold, 3)} />
-            <div className="heading chart-heading">04 / SEÑAL EN VIVO</div>
-            <div ref={chartRef} className="history-chart" aria-label="Gráfica de señal en vivo" />
-            <InfoRow label="MUESTRAS RECIBIDAS" value={telemetry.samples_received} />
+            <InfoRow
+              label="PICO DEL EVENTO"
+              value={format(telemetry.event_peak)}
+            />
+            <InfoRow
+              label="DURACIÓN"
+              value={`${Number(telemetry.event_duration || 0).toFixed(2)} s`}
+            />
+            <InfoRow
+              label="ÚLTIMA SEÑAL"
+              value={`${Number(telemetry.last_signal || 0).toFixed(1)} s`}
+            />
+            <InfoRow
+              label="UMBRAL MOVIMIENTO"
+              value={format(telemetry.movement_threshold, 3)}
+            />
+            <InfoRow
+              label="UMBRAL BRUSCO"
+              value={format(telemetry.sudden_threshold, 3)}
+            />
+            <InfoRow
+              label="UMBRAL ACTIVIDAD SOSTENIDA"
+              value={`${format(telemetry.sustained_threshold, 3)} / ${telemetry.sustained_seconds} s`}
+            />
+            <InfoRow
+              label="UMBRAL CRÍTICO"
+              value={format(telemetry.critical_threshold, 3)}
+            />
+
+            <div className="heading chart-heading">
+              04 / SEÑAL EN VIVO
+            </div>
+
+            <div
+              ref={chartRef}
+              className="history-chart"
+              aria-label="Gráfica de señal en vivo"
+            />
+
+            <InfoRow
+              label="MUESTRAS RECIBIDAS"
+              value={telemetry.samples_received}
+            />
+
             <InfoRow
               label="CORREO"
-              value={telemetry.email_type ? `${telemetry.email_type} · ${telemetry.email_ok === true ? "OK" : telemetry.email_ok === false ? "ERROR" : "PENDIENTE"}` : "SIN ENVÍOS"}
+              value={
+                telemetry.email_type
+                  ? `${telemetry.email_type} · ${
+                      telemetry.email_ok === true
+                        ? "OK"
+                        : telemetry.email_ok === false
+                        ? "ERROR"
+                        : "PENDIENTE"
+                    }`
+                  : "SIN ENVÍOS"
+              }
             />
+
             <div className="chart-caption">{chartLabel}</div>
           </section>
         </div>
-        <div className="footer">SEISMIC CORE X · SISTEMA DE MONITOREO SÍSMICO · CANAL {connected ? "ACTIVO" : "DESCONECTADO"}</div>
+
+        <div className="footer">
+          SEISMIC CORE X · SISTEMA DE MONITOREO SÍSMICO · CANAL{" "}
+          {connected ? "ACTIVO" : "DESCONECTADO"}
+        </div>
       </main>
     </>
   );
@@ -404,7 +561,12 @@ function Metric({ label, value, unit }) {
 }
 
 function InfoRow({ label, value }) {
-  return <div className="info-row"><span>{label}</span><span>{value}</span></div>;
+  return (
+    <div className="info-row">
+      <span>{label}</span>
+      <span>{value}</span>
+    </div>
+  );
 }
 
 export default App;
