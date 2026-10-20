@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip } from "react-leaflet";
-import "leaflet/dist/leaflet.css";
 
 const MAX_SAMPLES = 160;
-const SENSOR_LOCATION = [-33.4937, -70.7474];
 const initialTelemetry = {
   system_status: "ESPERANDO SENSOR",
   magnitude: 0,
@@ -48,6 +45,18 @@ function App() {
   const [connected, setConnected] = useState(false);
   const chartRef = useRef(null);
   const radarRef = useRef(null);
+  const radarDataRef = useRef({ connected: false, magnitude: 0, filtered_signal: 0, level: 1, movement_threshold: 0.035, critical_threshold: 0.15 });
+
+  useEffect(() => {
+    radarDataRef.current = {
+      connected,
+      magnitude: Number(telemetry.magnitude || 0),
+      filtered_signal: Number(telemetry.filtered_signal || 0),
+      level: Number(telemetry.level || 1),
+      movement_threshold: Number(telemetry.movement_threshold || 0.035),
+      critical_threshold: Number(telemetry.critical_threshold || 0.15),
+    };
+  }, [connected, telemetry.magnitude, telemetry.filtered_signal, telemetry.level, telemetry.movement_threshold, telemetry.critical_threshold]);
 
   const receiveTelemetry = useCallback((event) => {
     try {
@@ -149,79 +158,158 @@ function App() {
 
   useEffect(() => {
     const canvas = radarRef.current;
+    if (!canvas) return undefined;
     const context = canvas.getContext("2d");
+    if (!context) return undefined;
     let frame;
     let angle = 0;
+    let pulse = 0;
 
     const draw = () => {
-      const size = canvas.clientWidth;
+      const size = Math.max(1, canvas.clientWidth || 320);
+      const height = Math.max(1, canvas.clientHeight || size);
       const ratio = window.devicePixelRatio || 1;
-      if (canvas.width !== size * ratio) {
+      if (canvas.width !== size * ratio || canvas.height !== height * ratio) {
         canvas.width = size * ratio;
-        canvas.height = size * ratio;
+        canvas.height = height * ratio;
       }
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      const center = size / 2;
-      const radius = size * 0.43;
-      context.clearRect(0, 0, size, size);
-      context.strokeStyle = "rgba(57,255,155,.28)";
+      context.clearRect(0, 0, size, height);
+
+      const centerX = size / 2;
+      const centerY = height / 2;
+      const radius = Math.min(size, height) * 0.43;
+      const data = radarDataRef.current;
+      const signal = Math.max(data.magnitude, data.filtered_signal);
+      const moving = data.connected && (data.level >= 2 || signal >= data.movement_threshold);
+      const color = !data.connected ? "#49636a"
+        : data.level >= 4 || signal >= data.critical_threshold ? "#ff4d67"
+        : data.level === 3 ? "#ff963d"
+        : moving || data.level === 2 ? "#ffd447"
+        : "#39ff9b";
+      const intensity = Math.max(0, Math.min(1, signal / Math.max(data.critical_threshold, 0.001)));
+
+      // Fondo oscuro y esfera luminosa
+      const background = context.createRadialGradient(centerX, centerY, radius * 0.05, centerX, centerY, radius * 1.2);
+      background.addColorStop(0, moving ? "rgba(255,212,71,0.11)" : "rgba(57,255,155,0.10)");
+      background.addColorStop(0.72, "rgba(3,20,24,0.96)");
+      background.addColorStop(1, "rgba(1,8,12,0.99)");
+      context.fillStyle = background;
+      context.fillRect(0, 0, size, height);
+
+      // Halo exterior de la esfera
+      context.save();
+      context.shadowColor = color;
+      context.shadowBlur = moving ? 24 : 15;
+      context.strokeStyle = color;
+      context.globalAlpha = data.connected ? 0.72 : 0.25;
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      context.stroke();
+      context.restore();
+
+      // Esfera 3D con gradiente radial
+      const sphere = context.createRadialGradient(
+        centerX - radius * 0.32, centerY - radius * 0.36, radius * 0.04,
+        centerX, centerY, radius
+      );
+      sphere.addColorStop(0, moving ? "rgba(255,245,173,0.30)" : "rgba(180,255,219,0.25)");
+      sphere.addColorStop(0.35, moving ? "rgba(181,151,28,0.22)" : "rgba(18,145,85,0.23)");
+      sphere.addColorStop(0.78, "rgba(3,44,37,0.72)");
+      sphere.addColorStop(1, "rgba(0,8,13,0.97)");
+      context.fillStyle = sphere;
+      context.beginPath();
+      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      context.fill();
+
+      // Anillos concéntricos de la esfera
+      context.save();
+      context.beginPath();
+      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      context.clip();
+      context.strokeStyle = color;
       context.lineWidth = 1;
       for (let ring = 1; ring <= 4; ring += 1) {
+        context.globalAlpha = 0.13 + ring * 0.035;
         context.beginPath();
-        context.arc(center, center, radius * ring / 4, 0, Math.PI * 2);
+        context.arc(centerX, centerY, radius * ring / 4, 0, Math.PI * 2);
+        context.stroke();
+      }
+      // Meridianos para dar apariencia esférica
+      context.globalAlpha = 0.22;
+      for (const squash of [0.32, 0.62]) {
+        context.beginPath();
+        context.ellipse(centerX, centerY, radius * squash, radius, angle * 0.12, 0, Math.PI * 2);
         context.stroke();
       }
       context.beginPath();
-      context.moveTo(center - radius, center);
-      context.lineTo(center + radius, center);
-      context.moveTo(center, center - radius);
-      context.lineTo(center, center + radius);
+      context.ellipse(centerX, centerY, radius, radius * 0.34, 0, 0, Math.PI * 2);
       context.stroke();
+      context.restore();
 
-      const sweep = context.createRadialGradient(center, center, 0, center, center, radius);
-      sweep.addColorStop(0, "rgba(57,255,155,.02)");
-      sweep.addColorStop(1, "rgba(57,255,155,.20)");
-      context.beginPath();
-      context.moveTo(center, center);
-      context.arc(center, center, radius, angle - 0.45, angle);
-      context.closePath();
+      // Barrido radar suave
+      const sweep = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+      sweep.addColorStop(0, `${color}00`);
+      sweep.addColorStop(1, data.connected ? "rgba(57,255,155,0.10)" : "rgba(90,120,130,0.04)");
       context.fillStyle = sweep;
-      context.fill();
       context.beginPath();
-      context.moveTo(center, center);
-      context.lineTo(center + Math.cos(angle) * radius, center + Math.sin(angle) * radius);
-      context.strokeStyle = "rgba(99,255,180,.95)";
-      context.lineWidth = 2;
-      context.shadowColor = "#39ff9b";
-      context.shadowBlur = 12;
+      context.moveTo(centerX, centerY);
+      context.arc(centerX, centerY, radius, angle - 0.55, angle);
+      context.closePath();
+      context.fill();
+      context.strokeStyle = color;
+      context.globalAlpha = 0.75;
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.moveTo(centerX, centerY);
+      context.lineTo(centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius);
       context.stroke();
-      context.shadowBlur = 0;
+      context.globalAlpha = 1;
 
-      if (connected && telemetry.magnitude > 0.001) {
-        const intensity = Math.min(telemetry.magnitude / telemetry.critical_threshold, 1);
-        const distance = radius * (0.2 + intensity * 0.65);
-        const pointX = center + Math.cos(angle * 0.7) * distance;
-        const pointY = center + Math.sin(angle * 0.7) * distance;
-        const color = telemetry.level >= 4 ? "#ff5874" : telemetry.level === 3 ? "#ffad70" : telemetry.level === 2 ? "#ffd66b" : "#63f5b0";
+      // Cuando hay movimiento real, nacen ondas pequeñas en el centro y crecen
+      if (moving) {
+        pulse = (pulse + 0.012 + intensity * 0.018) % 1;
+        for (let wave = 0; wave < 3; wave += 1) {
+          const phase = (pulse + wave / 3) % 1;
+          const waveRadius = radius * (0.06 + phase * 0.88);
+          context.beginPath();
+          context.arc(centerX, centerY, waveRadius, 0, Math.PI * 2);
+          context.strokeStyle = color;
+          context.lineWidth = 1.2 + intensity * 1.8;
+          context.globalAlpha = (1 - phase) * (0.35 + intensity * 0.65);
+          context.shadowColor = color;
+          context.shadowBlur = 10 + intensity * 18;
+          context.stroke();
+        }
+        context.globalAlpha = 1;
+        context.shadowBlur = 0;
+        // Núcleo central: se ilumina con la señal
         context.beginPath();
-        context.arc(pointX, pointY, 5 + intensity * 7, 0, Math.PI * 2);
+        context.arc(centerX, centerY, 3 + intensity * 7, 0, Math.PI * 2);
         context.fillStyle = color;
         context.shadowColor = color;
-        context.shadowBlur = 20;
+        context.shadowBlur = 16 + intensity * 20;
         context.fill();
-        context.beginPath();
-        context.arc(pointX, pointY, 12 + intensity * 10, 0, Math.PI * 2);
-        context.strokeStyle = color;
-        context.lineWidth = 1.5;
-        context.stroke();
         context.shadowBlur = 0;
+      } else {
+        // Pulso lento en verde cuando está estable
+        const breathing = 0.5 + 0.5 * Math.sin(angle * 1.4);
+        context.beginPath();
+        context.arc(centerX, centerY, 3 + breathing * 2, 0, Math.PI * 2);
+        context.fillStyle = color;
+        context.globalAlpha = data.connected ? 0.45 + breathing * 0.45 : 0.25;
+        context.fill();
+        context.globalAlpha = 1;
       }
-      angle = (angle + 0.012) % (Math.PI * 2);
+
+      angle = (angle + (moving ? 0.018 : 0.008)) % (Math.PI * 2);
       frame = requestAnimationFrame(draw);
     };
+
     draw();
     return () => cancelAnimationFrame(frame);
-  }, [connected, telemetry.magnitude, telemetry.level, telemetry.critical_threshold]);
+  }, []);
 
   const statusClass = `status level${telemetry.level}${connected ? "" : " offline"}`;
   const intensity = Math.min(100, Math.max(0, telemetry.relative_intensity || 0));
@@ -251,40 +339,12 @@ function App() {
           <section className="panel radar-panel">
             <div className="heading">01 / RADAR DE ACTIVIDAD</div>
             <div className="radar-wrap">
-              <MapContainer
-                center={SENSOR_LOCATION}
-                zoom={15}
-                zoomControl={false}
-                dragging={false}
-                scrollWheelZoom={false}
-                doubleClickZoom={false}
-                touchZoom={false}
-                keyboard={false}
-                attributionControl={false}
-                className="radar-map"
-              >
-                <TileLayer
-                  attribution="&copy; OpenStreetMap contributors"
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  maxZoom={19}
-                />
-                <CircleMarker
-                  center={SENSOR_LOCATION}
-                  radius={Math.max(3, Math.min(18, telemetry.magnitude * 100))}
-                  pathOptions={{
-                    color: telemetry.level >= 4 ? "#ff5874" : telemetry.level === 3 ? "#ffad70" : "#63f5b0",
-                    fillColor: telemetry.level >= 4 ? "#ff5874" : telemetry.level === 3 ? "#ffad70" : "#63f5b0",
-                    fillOpacity: connected ? 0.85 : 0.25,
-                    weight: 2,
-                  }}
-                  
-                >
-                  <Tooltip permanent direction="top" offset={[0, -2]} className="street-text-label">
-                    PUERTO CÁRDENAS
-                  </Tooltip>
-                </CircleMarker>
-              </MapContainer>
-              <canvas ref={radarRef} className="radar-canvas" aria-label="Radar de actividad" />
+              <canvas
+                ref={radarRef}
+                className="radar-canvas"
+                aria-label="Esfera sísmica animada: verde estable, amarillo en movimiento, naranja intenso y rojo crítico"
+                role="img"
+              />
             </div>
             <div className="radar-label">{sensorText}</div>
             <div className="clock-panel">
