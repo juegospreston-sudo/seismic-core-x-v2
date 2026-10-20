@@ -1,6 +1,7 @@
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { CircleMarker, MapContainer, TileLayer, Tooltip } from "react-leaflet";
+import { CircleMarker, MapContainer, TileLayer } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 const MAX_SAMPLES = 160;
@@ -31,9 +32,12 @@ const initialTelemetry = {
 };
 
 function websocketUrl() {
-  const configured = import.meta.env.VITE_API_URL || "http://localhost:8000";
+  const configured =
+    import.meta.env.VITE_API_URL || "http://localhost:8000";
+
   const url = new URL(configured);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+
   return `${url.origin}/ws/dashboard`;
 }
 
@@ -71,7 +75,7 @@ function App() {
         ].slice(-MAX_SAMPLES)
       );
     } catch {
-      // Ignora mensajes de telemetría incorrectos.
+      // Ignora mensajes incorrectos.
     }
   }, []);
 
@@ -88,7 +92,10 @@ function App() {
 
       socket.addEventListener("close", () => {
         setConnected(false);
-        if (!stopped) retry = window.setTimeout(connect, 2000);
+
+        if (!stopped) {
+          retry = window.setTimeout(connect, 2000);
+        }
       });
 
       socket.addEventListener("error", () => setConnected(false));
@@ -140,7 +147,11 @@ function App() {
           smooth: true,
           showSymbol: false,
           data: [],
-          lineStyle: { color: "#63f5b0", width: 1, type: "dashed" },
+          lineStyle: {
+            color: "#63f5b0",
+            width: 1,
+            type: "dashed",
+          },
         },
       ],
     });
@@ -169,8 +180,8 @@ function App() {
     });
   }, [samples]);
 
-  // RADAR: ondas circulares como una gota de agua.
-  // El mapa original se conserva debajo de la animación.
+  // RADAR: ondas lentas como las que produce una gota de agua.
+  // El mapa permanece visible debajo de la animación.
   useEffect(() => {
     const canvas = radarRef.current;
     if (!canvas) return;
@@ -187,6 +198,7 @@ function App() {
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
+
       if (!rect.width || !rect.height) return;
 
       width = rect.width;
@@ -215,10 +227,12 @@ function App() {
       );
 
       const level = Number(data.level) || 0;
-      const movementThreshold = Number(data.movement_threshold) || 0.035;
-      const criticalThreshold = Number(data.critical_threshold) || 0.15;
+      const movementThreshold =
+        Number(data.movement_threshold) || 0.035;
+      const criticalThreshold =
+        Number(data.critical_threshold) || 0.15;
 
-      // Color según la actividad sísmica informada por el sistema.
+      // Color de las ondas según la actividad detectada.
       let color = "#39ff78";
 
       if (level >= 4 || magnitude >= criticalThreshold) {
@@ -238,15 +252,20 @@ function App() {
 
       const centerX = width / 2;
       const centerY = height / 2;
-      const maxRadius = Math.max(8, Math.min(width, height) * 0.46);
+      const maxRadius = Math.max(
+        8,
+        Math.min(width, height) * 0.46
+      );
 
-      // Las ondas se expanden más rápido cuando hay movimiento.
-      const speed = moving ? 1.15 : 0.42;
+      // Velocidad reducida para un movimiento suave y lento.
+      // Una vuelta completa de cada onda tarda aproximadamente
+      // 6 segundos con movimiento y 15 segundos en estado estable.
+      const speed = moving ? 0.16 : 0.065;
       const cycle = ((now - startTime) / 1000) * speed;
 
-      // Guías circulares sutiles sobre el mapa.
+      // Círculos de referencia discretos.
       context.save();
-      context.strokeStyle = "rgba(57,255,155,0.22)";
+      context.strokeStyle = "rgba(57,255,155,0.18)";
       context.lineWidth = 1;
 
       for (let ring = 1; ring <= 4; ring += 1) {
@@ -263,36 +282,39 @@ function App() {
 
       context.restore();
 
-      // Tres ondas nacen en el centro y se expanden como ondas de agua.
+      // Tres ondas que nacen en el centro y se abren lentamente.
       for (let i = 0; i < 3; i += 1) {
         const phase = (cycle + i / 3) % 1;
         const radius = 3 + phase * maxRadius;
-        const opacity = (1 - phase) * (moving ? 0.9 : 0.38);
+        const opacity = (1 - phase) * (moving ? 0.85 : 0.32);
 
         context.save();
         context.beginPath();
-        context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        context.arc(
+          centerX,
+          centerY,
+          radius,
+          0,
+          Math.PI * 2
+        );
+
         context.strokeStyle = color;
         context.globalAlpha = opacity;
-        context.lineWidth = moving ? 2.5 : 1.5;
+        context.lineWidth = moving ? 2 : 1.4;
         context.shadowColor = color;
-        context.shadowBlur = moving ? 15 : 6;
+        context.shadowBlur = moving ? 12 : 5;
         context.stroke();
         context.restore();
       }
 
-      // Punto central: lugar donde cae la gota.
+      // Punto central que representa el origen de la onda.
       context.save();
 
-      const pulse = moving
-        ? 3.5 + Math.sin(now / 120) * 1.2
-        : 2.5;
-
       context.beginPath();
-      context.arc(centerX, centerY, pulse, 0, Math.PI * 2);
+      context.arc(centerX, centerY, 3, 0, Math.PI * 2);
       context.fillStyle = color;
       context.shadowColor = color;
-      context.shadowBlur = moving ? 20 : 8;
+      context.shadowBlur = 12;
       context.fill();
 
       context.restore();
@@ -341,7 +363,9 @@ function App() {
 
         <div className="connection">
           <span
-            className={`dot ${connected ? "online" : "offline-dot"}`}
+            className={`dot ${
+              connected ? "online" : "offline-dot"
+            }`}
           />
           {connected
             ? "WEBSOCKET CONECTADO"
@@ -399,16 +423,7 @@ function App() {
                     fillOpacity: connected ? 0.85 : 0.25,
                     weight: 2,
                   }}
-                >
-                  <Tooltip
-                    permanent
-                    direction="top"
-                    offset={[0, -2]}
-                    className="street-text-label"
-                  >
-                    PUERTO CÁRDENAS
-                  </Tooltip>
-                </CircleMarker>
+                />
               </MapContainer>
 
               <canvas
@@ -433,7 +448,9 @@ function App() {
             <div className="heading">02 / ESTADO DEL SISTEMA</div>
 
             <div className={statusClass}>
-              {connected ? telemetry.system_status : "SIN CONEXIÓN"}
+              {connected
+                ? telemetry.system_status
+                : "SIN CONEXIÓN"}
             </div>
 
             <div className="metrics">
@@ -475,8 +492,14 @@ function App() {
           <section className="panel side">
             <div className="heading">03 / TELEMETRÍA</div>
 
-            <InfoRow label="COMUNICACIÓN" value={telemetry.communication} />
-            <InfoRow label="CALIBRACIÓN" value={telemetry.calibration} />
+            <InfoRow
+              label="COMUNICACIÓN"
+              value={telemetry.communication}
+            />
+            <InfoRow
+              label="CALIBRACIÓN"
+              value={telemetry.calibration}
+            />
             <InfoRow label="DIRECCIÓN" value={telemetry.direction} />
             <InfoRow
               label="PICO DEL EVENTO"
@@ -484,11 +507,15 @@ function App() {
             />
             <InfoRow
               label="DURACIÓN"
-              value={`${Number(telemetry.event_duration || 0).toFixed(2)} s`}
+              value={`${Number(
+                telemetry.event_duration || 0
+              ).toFixed(2)} s`}
             />
             <InfoRow
               label="ÚLTIMA SEÑAL"
-              value={`${Number(telemetry.last_signal || 0).toFixed(1)} s`}
+              value={`${Number(
+                telemetry.last_signal || 0
+              ).toFixed(1)} s`}
             />
             <InfoRow
               label="UMBRAL MOVIMIENTO"
@@ -500,7 +527,10 @@ function App() {
             />
             <InfoRow
               label="UMBRAL ACTIVIDAD SOSTENIDA"
-              value={`${format(telemetry.sustained_threshold, 3)} / ${telemetry.sustained_seconds} s`}
+              value={`${format(
+                telemetry.sustained_threshold,
+                3
+              )} / ${telemetry.sustained_seconds} s`}
             />
             <InfoRow
               label="UMBRAL CRÍTICO"
