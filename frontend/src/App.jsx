@@ -32,9 +32,12 @@ const initialTelemetry = {
 };
 
 function websocketUrl() {
-  const configured = import.meta.env.VITE_API_URL || "http://localhost:8000";
+  const configured =
+    import.meta.env.VITE_API_URL || "http://localhost:8000";
+
   const url = new URL(configured);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+
   return `${url.origin}/ws/dashboard`;
 }
 
@@ -49,6 +52,11 @@ function App() {
 
   const chartRef = useRef(null);
   const radarRef = useRef(null);
+  const radarStateRef = useRef({ connected, telemetry });
+
+  useEffect(() => {
+    radarStateRef.current = { connected, telemetry };
+  }, [connected, telemetry]);
 
   const receiveTelemetry = useCallback((event) => {
     try {
@@ -57,15 +65,17 @@ function App() {
 
       setTelemetry((previous) => ({ ...previous, ...next }));
 
-      setSamples((previous) => [
-        ...previous,
-        {
-          value: Number(next.filtered_signal || 0),
-          average: Number(next.moving_average || 0),
-        },
-      ].slice(-MAX_SAMPLES));
+      setSamples((previous) =>
+        [
+          ...previous,
+          {
+            value: Number(next.filtered_signal || 0),
+            average: Number(next.moving_average || 0),
+          },
+        ].slice(-MAX_SAMPLES)
+      );
     } catch {
-      // Ignorar mensajes que no contengan JSON válido.
+      // Ignora mensajes incorrectos.
     }
   }, []);
 
@@ -75,24 +85,20 @@ function App() {
     let stopped = false;
 
     const connect = () => {
-      if (stopped) return;
+      socket = new WebSocket(websocketUrl());
 
-      try {
-        socket = new WebSocket(websocketUrl());
+      socket.addEventListener("open", () => setConnected(true));
+      socket.addEventListener("message", receiveTelemetry);
 
-        socket.addEventListener("open", () => setConnected(true));
-        socket.addEventListener("message", receiveTelemetry);
-
-        socket.addEventListener("close", () => {
-          setConnected(false);
-          if (!stopped) retry = window.setTimeout(connect, 2000);
-        });
-
-        socket.addEventListener("error", () => setConnected(false));
-      } catch {
+      socket.addEventListener("close", () => {
         setConnected(false);
-        if (!stopped) retry = window.setTimeout(connect, 2000);
-      }
+
+        if (!stopped) {
+          retry = window.setTimeout(connect, 2000);
+        }
+      });
+
+      socket.addEventListener("error", () => setConnected(false));
     };
 
     connect();
@@ -141,7 +147,11 @@ function App() {
           smooth: true,
           showSymbol: false,
           data: [],
-          lineStyle: { color: "#63f5b0", width: 1, type: "dashed" },
+          lineStyle: {
+            color: "#63f5b0",
+            width: 1,
+            type: "dashed",
+          },
         },
       ],
     });
@@ -155,9 +165,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!chartRef.current) return;
+    const chart = chartRef.current
+      ? echarts.getInstanceByDom(chartRef.current)
+      : null;
 
-    const chart = echarts.getInstanceByDom(chartRef.current);
     if (!chart) return;
 
     chart.setOption({
@@ -169,8 +180,7 @@ function App() {
     });
   }, [samples]);
 
-  // RADAR: el barrido permanece activo; las ondas solo aparecen
-  // cuando la señal real supera el umbral de movimiento.
+  // RADAR: las ondas tipo gotas solo aparecen mientras hay movimiento.
   useEffect(() => {
     const canvas = radarRef.current;
     if (!canvas) return;
@@ -179,185 +189,185 @@ function App() {
     if (!context) return;
 
     let frame;
-    let angle = 0;
+    let width = 0;
+    let height = 0;
+    let ratio = 1;
 
-    const magnitude = Math.abs(Number(telemetry.magnitude) || 0);
-    const filteredSignal = Math.abs(Number(telemetry.filtered_signal) || 0);
-    const signal = Math.max(magnitude, filteredSignal);
+    const startTime = performance.now();
 
-    const configuredThreshold = Number(telemetry.movement_threshold);
-    const movementThreshold =
-      Number.isFinite(configuredThreshold) && configuredThreshold > 0
-        ? configuredThreshold
-        : 0.035;
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
 
-    const moving = connected && signal >= movementThreshold;
+      if (!rect.width || !rect.height) return;
 
-    const configuredCritical = Number(telemetry.critical_threshold);
-    const criticalThreshold =
-      Number.isFinite(configuredCritical) && configuredCritical > 0
-        ? configuredCritical
-        : 0.15;
+      width = rect.width;
+      height = rect.height;
+      ratio = Math.min(window.devicePixelRatio || 1, 2);
 
-    const draw = () => {
-      const size = canvas.clientWidth;
-      if (size <= 0) {
-        frame = requestAnimationFrame(draw);
-        return;
-      }
-
-      const ratio = window.devicePixelRatio || 1;
-      const pixelSize = Math.round(size * ratio);
-
-      if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
-        canvas.width = pixelSize;
-        canvas.height = pixelSize;
-      }
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
 
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
 
-      const center = size / 2;
-      const radius = size * 0.43;
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    resize();
 
-      context.clearRect(0, 0, size, size);
+    const draw = (now) => {
+      context.clearRect(0, 0, width, height);
 
-      // Anillos fijos: nunca desaparecen.
-      context.strokeStyle = "rgba(57,255,155,.28)";
+      const { connected: isConnected, telemetry: data } =
+        radarStateRef.current;
+
+      const magnitude = Math.max(
+        Math.abs(Number(data.magnitude) || 0),
+        Math.abs(Number(data.filtered_signal) || 0)
+      );
+
+      const level = Number(data.level) || 0;
+      const configuredThreshold = Number(data.movement_threshold);
+
+      const movementThreshold =
+        Number.isFinite(configuredThreshold) && configuredThreshold > 0
+          ? configuredThreshold
+          : 0.035;
+
+      const criticalThreshold = Number(data.critical_threshold) || 0.15;
+
+      // El nivel anterior no mantiene las ondas activas.
+      // Debe existir señal por encima del umbral de movimiento.
+      const moving = isConnected && magnitude >= movementThreshold;
+
+      // En reposo, el radar vuelve al verde.
+      let color = "#39ff78";
+
+      if (moving) {
+        if (level >= 4 || magnitude >= criticalThreshold) {
+          color = "#ff3030";
+        } else if (level >= 3) {
+          color = "#ff8c32";
+        } else if (level >= 2) {
+          color = "#ffe34a";
+        }
+      }
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const maxRadius = Math.max(
+        8,
+        Math.min(width, height) * 0.46
+      );
+
+      const cycle = ((now - startTime) / 1000) * 0.16;
+
+      // Círculos de referencia: permanecen visibles en reposo.
+      context.save();
+      context.strokeStyle = "rgba(57,255,155,0.18)";
       context.lineWidth = 1;
 
       for (let ring = 1; ring <= 4; ring += 1) {
         context.beginPath();
-        context.arc(center, center, radius * ring / 4, 0, Math.PI * 2);
+        context.arc(
+          centerX,
+          centerY,
+          (maxRadius * ring) / 4,
+          0,
+          Math.PI * 2
+        );
         context.stroke();
       }
 
-      context.beginPath();
-      context.moveTo(center - radius, center);
-      context.lineTo(center + radius, center);
-      context.moveTo(center, center - radius);
-      context.lineTo(center, center + radius);
-      context.stroke();
+      context.restore();
 
-      // Barrido verde continuo, incluso cuando el sensor está quieto.
-      const sweep = context.createRadialGradient(
-        center, center, 0, center, center, radius
-      );
-
-      sweep.addColorStop(0, "rgba(57,255,155,.02)");
-      sweep.addColorStop(1, "rgba(57,255,155,.20)");
-
-      context.beginPath();
-      context.moveTo(center, center);
-      context.arc(center, center, radius, angle - 0.45, angle);
-      context.closePath();
-      context.fillStyle = sweep;
-      context.fill();
-
-      context.beginPath();
-      context.moveTo(center, center);
-      context.lineTo(
-        center + Math.cos(angle) * radius,
-        center + Math.sin(angle) * radius
-      );
-
-      context.strokeStyle = "rgba(99,255,180,.95)";
-      context.lineWidth = 2;
-      context.shadowColor = "#39ff9b";
-      context.shadowBlur = 12;
-      context.stroke();
-      context.shadowBlur = 0;
-
-      // Las gotas/ondas solo se generan durante el movimiento.
+      // Las tres ondas tipo gotas solo se dibujan cuando hay movimiento.
       if (moving) {
-        const intensity = Math.min(signal / criticalThreshold, 1);
-        const distance = radius * (0.2 + intensity * 0.65);
-        const pointX = center + Math.cos(angle * 0.7) * distance;
-        const pointY = center + Math.sin(angle * 0.7) * distance;
+        for (let i = 0; i < 3; i += 1) {
+          const phase = (cycle + i / 3) % 1;
+          const radius = 3 + phase * maxRadius;
+          const opacity = (1 - phase) * 0.85;
 
-        const color =
-          telemetry.level >= 4
-            ? "#ff5874"
-            : telemetry.level === 3
-              ? "#ffad70"
-              : telemetry.level === 2
-                ? "#ffd66b"
-                : "#63f5b0";
+          context.save();
+          context.beginPath();
+          context.arc(
+            centerX,
+            centerY,
+            radius,
+            0,
+            Math.PI * 2
+          );
 
-        context.beginPath();
-        context.arc(pointX, pointY, 5 + intensity * 7, 0, Math.PI * 2);
-        context.fillStyle = color;
-        context.shadowColor = color;
-        context.shadowBlur = 20;
-        context.fill();
-
-        context.beginPath();
-        context.arc(pointX, pointY, 12 + intensity * 10, 0, Math.PI * 2);
-        context.strokeStyle = color;
-        context.lineWidth = 1.5;
-        context.stroke();
-        context.shadowBlur = 0;
+          context.strokeStyle = color;
+          context.globalAlpha = opacity;
+          context.lineWidth = 2;
+          context.shadowColor = color;
+          context.shadowBlur = 12;
+          context.stroke();
+          context.restore();
+        }
       }
 
-      // Sin movimiento, no dibujamos gotas ni ondas.
-      angle = (angle + 0.012) % (Math.PI * 2);
+      // Punto central: verde en reposo.
+      context.save();
+      context.beginPath();
+      context.arc(centerX, centerY, 3, 0, Math.PI * 2);
+      context.fillStyle = moving ? color : "#39ff78";
+      context.shadowColor = moving ? color : "#39ff78";
+      context.shadowBlur = 12;
+      context.fill();
+      context.restore();
+
       frame = requestAnimationFrame(draw);
     };
 
-    draw();
+    frame = requestAnimationFrame(draw);
 
     return () => {
-      if (frame) cancelAnimationFrame(frame);
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      context.clearRect(0, 0, width, height);
     };
-  }, [
-    connected,
-    telemetry.magnitude,
-    telemetry.filtered_signal,
-    telemetry.movement_threshold,
-    telemetry.level,
-    telemetry.critical_threshold,
-  ]);
+  }, []);
 
-  const statusClass = `status level${telemetry.level}${connected ? "" : " offline"}`;
-  const intensity = Math.min(100, Math.max(0, telemetry.relative_intensity || 0));
+  const statusClass = `status level${telemetry.level}${
+    connected ? "" : " offline"
+  }`;
+
+  const intensity = Math.min(
+    100,
+    Math.max(0, telemetry.relative_intensity || 0)
+  );
+
   const sensorText = telemetry.connected_sensors
-    ? `${telemetry.connected_sensors} SENSOR${telemetry.connected_sensors > 1 ? "ES" : ""}`
+    ? `${telemetry.connected_sensors} SENSOR${
+        telemetry.connected_sensors > 1 ? "ES" : ""
+      }`
     : "SIN SENSOR";
 
   const chartLabel = useMemo(
     () => `${samples.length} muestras en ventana`,
-    [samples.length],
+    [samples.length]
   );
-
-  const moving =
-    connected &&
-    Math.max(
-      Math.abs(Number(telemetry.magnitude) || 0),
-      Math.abs(Number(telemetry.filtered_signal) || 0),
-    ) >=
-      (Number(telemetry.movement_threshold) > 0
-        ? Number(telemetry.movement_threshold)
-        : 0.035);
-
-  const mapColor = moving
-    ? telemetry.level >= 4
-      ? "#ff5874"
-      : telemetry.level === 3
-        ? "#ffad70"
-        : telemetry.level === 2
-          ? "#ffd66b"
-          : "#63f5b0"
-    : "#39ff9b";
 
   return (
     <>
       <header>
         <div>
           <div className="logo">SEISMIC CORE X</div>
-          <div className="sub">EL SISTEMA ESTÁ DETECTANDO · TELEMETRÍA EN VIVO</div>
+          <div className="sub">
+            EL SISTEMA ESTÁ DETECTANDO · TELEMETRÍA EN VIVO
+          </div>
         </div>
+
         <div className="connection">
-          <span className={`dot ${connected ? "online" : "offline-dot"}`} />
-          {connected ? "WEBSOCKET CONECTADO" : "REINTENTANDO CONEXIÓN"}
+          <span
+            className={`dot ${
+              connected ? "online" : "offline-dot"
+            }`}
+          />
+          {connected
+            ? "WEBSOCKET CONECTADO"
+            : "REINTENTANDO CONEXIÓN"}
         </div>
       </header>
 
@@ -387,10 +397,27 @@ function App() {
 
                 <CircleMarker
                   center={SENSOR_LOCATION}
-                  radius={moving ? Math.max(5, Math.min(18, 5 + Math.abs(Number(telemetry.magnitude) || 0) * 100)) : 3}
+                  radius={Math.max(
+                    3,
+                    Math.min(18, telemetry.magnitude * 100)
+                  )}
                   pathOptions={{
-                    color: mapColor,
-                    fillColor: mapColor,
+                    color:
+                      telemetry.level >= 4
+                        ? "#ff3030"
+                        : telemetry.level >= 3
+                        ? "#ff8c32"
+                        : telemetry.level >= 2
+                        ? "#ffe34a"
+                        : "#39ff78",
+                    fillColor:
+                      telemetry.level >= 4
+                        ? "#ff3030"
+                        : telemetry.level >= 3
+                        ? "#ff8c32"
+                        : telemetry.level >= 2
+                        ? "#ffe34a"
+                        : "#39ff78",
                     fillOpacity: connected ? 0.85 : 0.25,
                     weight: 2,
                   }}
@@ -400,7 +427,7 @@ function App() {
               <canvas
                 ref={radarRef}
                 className="radar-canvas"
-                aria-label="Radar de actividad"
+                aria-label="Ondas de actividad sísmica"
               />
             </div>
 
@@ -408,53 +435,132 @@ function App() {
 
             <div className="clock-panel">
               <strong>
-                {new Date().toLocaleTimeString("es-CL", { hour12: false })}
+                {new Date().toLocaleTimeString("es-AR", {
+                  hour12: false,
+                })}
               </strong>
             </div>
           </section>
 
           <section className="panel">
             <div className="heading">02 / ESTADO DEL SISTEMA</div>
+
             <div className={statusClass}>
-              {connected ? telemetry.system_status : "SIN CONEXIÓN"}
+              {connected
+                ? telemetry.system_status
+                : "SIN CONEXIÓN"}
             </div>
 
             <div className="metrics">
-              <Metric label="MAGNITUD" value={format(telemetry.magnitude)} unit="VALOR RECIBIDO" />
-              <Metric label="SEÑAL FILTRADA" value={format(telemetry.filtered_signal)} unit="PROMEDIO MÓVIL" />
-              <Metric label="NIVEL" value={telemetry.level} unit={telemetry.internal_classification} />
-              <Metric label="EVENTOS" value={telemetry.events} unit="CONTADOR DE EVENTOS" />
+              <Metric
+                label="MAGNITUD"
+                value={format(telemetry.magnitude)}
+                unit="VALOR RECIBIDO"
+              />
+              <Metric
+                label="SEÑAL FILTRADA"
+                value={format(telemetry.filtered_signal)}
+                unit="PROMEDIO MÓVIL"
+              />
+              <Metric
+                label="NIVEL"
+                value={telemetry.level}
+                unit={telemetry.internal_classification}
+              />
+              <Metric
+                label="EVENTOS"
+                value={telemetry.events}
+                unit="CONTADOR DE EVENTOS"
+              />
             </div>
 
-            <InfoRow label="INTENSIDAD RELATIVA" value={`${intensity.toFixed(1)}%`} />
+            <InfoRow
+              label="INTENSIDAD RELATIVA"
+              value={`${intensity.toFixed(1)}%`}
+            />
+
             <div className="bar">
-              <div className="bar-inner" style={{ width: `${intensity}%` }} />
+              <div
+                className="bar-inner"
+                style={{ width: `${intensity}%` }}
+              />
             </div>
           </section>
 
           <section className="panel side">
             <div className="heading">03 / TELEMETRÍA</div>
-            <InfoRow label="COMUNICACIÓN" value={telemetry.communication} />
-            <InfoRow label="CALIBRACIÓN" value={telemetry.calibration} />
+
+            <InfoRow
+              label="COMUNICACIÓN"
+              value={telemetry.communication}
+            />
+            <InfoRow
+              label="CALIBRACIÓN"
+              value={telemetry.calibration}
+            />
             <InfoRow label="DIRECCIÓN" value={telemetry.direction} />
-            <InfoRow label="PICO DEL EVENTO" value={format(telemetry.event_peak)} />
-            <InfoRow label="DURACIÓN" value={`${Number(telemetry.event_duration || 0).toFixed(2)} s`} />
-            <InfoRow label="ÚLTIMA SEÑAL" value={`${Number(telemetry.last_signal || 0).toFixed(1)} s`} />
-            <InfoRow label="UMBRAL MOVIMIENTO" value={format(telemetry.movement_threshold, 3)} />
-            <InfoRow label="UMBRAL BRUSCO" value={format(telemetry.sudden_threshold, 3)} />
-            <InfoRow label="UMBRAL ACTIVIDAD SOSTENIDA" value={`${format(telemetry.sustained_threshold, 3)} / ${telemetry.sustained_seconds} s`} />
-            <InfoRow label="UMBRAL CRÍTICO" value={format(telemetry.critical_threshold, 3)} />
+            <InfoRow
+              label="PICO DEL EVENTO"
+              value={format(telemetry.event_peak)}
+            />
+            <InfoRow
+              label="DURACIÓN"
+              value={`${Number(
+                telemetry.event_duration || 0
+              ).toFixed(2)} s`}
+            />
+            <InfoRow
+              label="ÚLTIMA SEÑAL"
+              value={`${Number(
+                telemetry.last_signal || 0
+              ).toFixed(1)} s`}
+            />
+            <InfoRow
+              label="UMBRAL MOVIMIENTO"
+              value={format(telemetry.movement_threshold, 3)}
+            />
+            <InfoRow
+              label="UMBRAL BRUSCO"
+              value={format(telemetry.sudden_threshold, 3)}
+            />
+            <InfoRow
+              label="UMBRAL ACTIVIDAD SOSTENIDA"
+              value={`${format(
+                telemetry.sustained_threshold,
+                3
+              )} / ${telemetry.sustained_seconds} s`}
+            />
+            <InfoRow
+              label="UMBRAL CRÍTICO"
+              value={format(telemetry.critical_threshold, 3)}
+            />
 
-            <div className="heading chart-heading">04 / SEÑAL EN VIVO</div>
-            <div ref={chartRef} className="history-chart" aria-label="Gráfica de señal en vivo" />
+            <div className="heading chart-heading">
+              04 / SEÑAL EN VIVO
+            </div>
 
-            <InfoRow label="MUESTRAS RECIBIDAS" value={telemetry.samples_received} />
+            <div
+              ref={chartRef}
+              className="history-chart"
+              aria-label="Gráfica de señal en vivo"
+            />
+
+            <InfoRow
+              label="MUESTRAS RECIBIDAS"
+              value={telemetry.samples_received}
+            />
 
             <InfoRow
               label="CORREO"
               value={
                 telemetry.email_type
-                  ? `${telemetry.email_type} · ${telemetry.email_ok === true ? "OK" : telemetry.email_ok === false ? "ERROR" : "PENDIENTE"}`
+                  ? `${telemetry.email_type} · ${
+                      telemetry.email_ok === true
+                        ? "OK"
+                        : telemetry.email_ok === false
+                        ? "ERROR"
+                        : "PENDIENTE"
+                    }`
                   : "SIN ENVÍOS"
               }
             />
@@ -464,7 +570,8 @@ function App() {
         </div>
 
         <div className="footer">
-          SEISMIC CORE X · SISTEMA DE MONITOREO SÍSMICO · CANAL {connected ? "ACTIVO" : "DESCONECTADO"}
+          SEISMIC CORE X · SISTEMA DE MONITOREO SÍSMICO · CANAL{" "}
+          {connected ? "ACTIVO" : "DESCONECTADO"}
         </div>
       </main>
     </>
